@@ -5,6 +5,8 @@ from .utils import Counter, sdiag, timeIt
 from .data import Data
 from .simulation import BaseSimulation
 from .objective_function import L2ObjectiveFunction
+from scipy.sparse import csr_matrix as csr
+from scipy.sparse import diags
 
 __all__ = ["L2DataMisfit"]
 
@@ -206,14 +208,193 @@ class L2DataMisfit(BaseDataMisfit):
             m, self.W * (self.W * self.simulation.Jvec_approx(m, v, f=f)), f=f
         )
 
+
 class l2_DataMisfit(L2DataMisfit):
     """
     This class will be deprecated in the next release of SimPEG. Please use
     `L2DataMisfit` instead.
     """
+
     def __init__(self, **kwargs):
         warnings.warn(
             "l2_DataMisfit has been depreciated in favor of L2DataMisfit. Please "
             "update your code to use 'L2DataMisfit'", DeprecationWarning
         )
         super(l2_DataMisfit, self).__init__(**kwargs)
+
+
+class L2DataMisfitDW(BaseDataMisfit):
+    """
+    The data misfit with an l_2 norm:
+
+    .. math::
+        \mu_\\text{data} = {1\over 2}\left|
+        \mathbf{W}_d (\mathbf{d}_\\text{pred} -
+        \mathbf{d}_\\text{obs}) \\right|_2^2
+    """
+    beta_dw = 0
+    beta_l2 = 1
+    heating_dw = 2
+    heat_fac = 2
+    count_iter = 0
+    iter_last = 0
+
+    @timeIt
+    def __call__(self, m, f=None):
+        "__call__(m, f=None)"
+        if isinstance(f, Delayed):
+            f = f.compute()
+
+        R = self.W * self.residual(m, f=f)
+
+        # DW statistic
+        # get residuals
+        dR = self.residual(m, f=f)
+        a = dR.shape[0]
+        b = a - 1
+        diagonals = [[np.ones(b) * -1], [np.ones(b)]]
+        A = diags(diagonals, [0, 1], shape=(b, a))
+
+        dw_numerator = np.sum(csr.dot(A, dR)**2)
+        dw_denomonator = np.vdot(dR - np.mean(dR), dR - np.mean(dR))
+        dw = dw_numerator / dw_denomonator
+        # check beta schedual
+        if self.count_iter > self.heating_dw:
+            if self.beta_dw == 0:
+                self.beta_dw = 0.25
+                self.beta_l2 = 0.75
+            else:
+                if self.beta_dw < 0.5:
+                    if self.iter_last < self.count_iter:
+                        self.beta_dw = self.beta_dw + 0.25
+                        self.beta_l2 = self.beta_l2 - 0.25
+        print('Beta_dw: {0} DW fac: {1} iter: {2} contribution CHI: {3} ontribution DW: {4}'.format(self.beta_dw, dw, self.count_iter, self.beta_l2 * (0.5 * np.vdot(R, R)), self.beta_dw * ((a - (dw * (a / 2)))**2)**0.5))
+        self.iter_last = self.count_iter
+        # self.count_iter += 1
+
+        return self.beta_l2 * (0.5 * np.vdot(R, R)) + self.beta_dw * ((a - (dw * (a / 2)))**2)**0.5
+        # return 0.5 * np.vdot(R, R) + self.beta_dw * dw
+
+    @timeIt
+    def derivL2(self, m, f=None):
+        """
+        deriv(m, f=None)
+        Derivative of the data misfit
+        .. math::
+            \mathbf{J}^{\top} \mathbf{W}^{\top} \mathbf{W}
+            (\mathbf{d} - \mathbf{d}^{obs})
+        :param numpy.ndarray m: model
+        :param SimPEG.Fields.Fields f: fields object
+        """
+
+        if isinstance(f, Delayed):
+            f = f.compute()
+
+        if f is None:
+            f = self.simulation.fields(m)
+
+        return self.simulation.Jtvec(
+            m, self.W.T * (self.W * self.residual(m, f=f)), f=f
+        )
+
+    @timeIt
+    def derivDW(self, m, f=None):
+        """
+        deriv(m, f=None)
+        Derivative of the data misfit
+        .. math::
+            \mathbf{J}^{\top} \mathbf{W}^{\top} \mathbf{W}
+            (\mathbf{d} - \mathbf{d}^{obs})
+        :param numpy.ndarray m: model
+        :param SimPEG.Fields.Fields f: fields object
+        """
+
+        if isinstance(f, Delayed):
+            f = f.compute()
+
+        if f is None:
+            f = self.simulation.fields(m)
+
+        dR = self.residual(m, f=f)
+        a = dR.shape[0]
+        b = a - 1
+        diagonals = [[np.ones(b) * -1], [np.ones(b)]]
+        A = diags(diagonals, [0, 1], shape=(b, a))
+
+        dDW_denomenator = (dR - np.mean(dR))**3
+
+        ff = (csr.dot(csr.dot(A.T, A), dR) * np.mean(dR)) / dDW_denomenator
+        # dDW = self.Jtvec(m, ff, f=f) * np.mean(dR)
+
+        return -2 * self.simulation.Jtvec(m, ff, f=f)
+
+    @timeIt
+    def deriv2DW(self, m, v, f=None):
+        """
+        deriv(m, f=None)
+        Derivative of the data misfit
+        .. math::
+            \mathbf{J}^{\top} \mathbf{W}^{\top} \mathbf{W}
+            (\mathbf{d} - \mathbf{d}^{obs})
+        :param numpy.ndarray m: model
+        :param SimPEG.Fields.Fields f: fields object
+        """
+
+        if isinstance(f, Delayed):
+            f = f.compute()
+
+        if f is None:
+            f = self.simulation.fields(m)
+
+        dR = self.residual(m, f=f)
+        a = dR.shape[0]
+        b = a - 1
+        diagonals = [[np.ones(b) * -1], [np.ones(b)]]
+        A = diags(diagonals, [0, 1], shape=(b, a))
+
+        dDW_denomenator = (dR - np.mean(dR))**4
+        ff = (csr.dot(csr.dot(A.T, A), (4 * dR - np.mean(dR))) * np.mean(dR)) / dDW_denomenator
+
+        # dDW2 = self.simulation.Jtvec_approx(
+        #     m, ff * (self.simulation.Jvec_approx(m, v, f=f)) / dDW_denomenator, f=f
+        # )
+
+        return -2 * self.simulation.Jtvec_approx(
+            m, ff * (self.simulation.Jvec_approx(m, v, f=f)) / dDW_denomenator, f=f
+        )
+
+    @timeIt
+    def deriv2L2(self, m, v, f=None):
+        """
+        deriv2(m, v, f=None)
+        .. math::
+            \mathbf{J}^{\top} \mathbf{W}^{\top} \mathbf{W} \mathbf{J}
+        :param numpy.ndarray m: model
+        :param numpy.ndarray v: vector
+        :param SimPEG.Fields.Fields f: fields object
+        """
+
+        if isinstance(f, Delayed):
+            f = f.compute()
+
+        if f is None:
+            f = self.simulation.fields(m)
+        return self.simulation.Jtvec_approx(
+            m, self.W * (self.W * self.simulation.Jvec_approx(m, v, f=f)), f=f
+        )
+
+    @timeIt
+    def deriv(self, m, f=None):
+        dmis = self.derivL2(m, f=f)
+        # print('shape of gradient: ', dmis.shape)
+        dw = self.derivDW(m, f=f)
+        dw = 0
+        # print('dw shape: ', dw.shape)
+        return dmis + self.beta_dw * dw
+
+    @timeIt
+    def deriv2(self, m, v, f=None):
+        dmis = self.deriv2L2(m, v, f=f)
+        dw = self.deriv2DW(m, v, f=f)
+        # dw = 0
+        return dmis + self.beta_dw * dw

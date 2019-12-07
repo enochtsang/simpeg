@@ -182,6 +182,7 @@ class BaseInvProblem(BaseSimPEG):
         f = self.getFields(m, store=(return_g is False and return_H is False))
 
         # if isinstance(self.dmisfit, BaseDataMisfit):
+        self.dmisfit.count_iter = self.opt.iter
         phi_d = self.dmisfit(m, f=f)
         self.dpred = self.get_dpred(m, f=f)
 
