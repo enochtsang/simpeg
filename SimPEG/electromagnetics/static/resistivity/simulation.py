@@ -60,7 +60,6 @@ class BaseDCSimulation(BaseEMSimulation):
         RHS = self.getRHS()
         Srcs = self.survey.source_list
 
-        print("Fields n_cpu %i" % self.n_cpu)
         f[Srcs, self._solutionType] = self.Ainv * RHS  #, num_cores=self.n_cpu).compute()
 
         if not self.storeJ:
@@ -288,102 +287,6 @@ class BaseDCSimulation(BaseEMSimulation):
         self.Ainv.clean()
 
         return self._Jmatrix
-
-    def _getJtJdiag(self, m, f=None):
-        """
-            Generate Full sensitivity matrix
-        """
-
-        if self._Jmatrix is not None:
-            return self._Jmatrix
-        else:
-
-            self.model = m
-            if f is None:
-                f = self.fields(m).compute()
-
-        if os.path.exists(self.Jpath):
-            shutil.rmtree(self.Jpath, ignore_errors=True)
-
-            # Wait for the system to clear out the directory
-            while os.path.exists(self.Jpath):
-                pass
-
-        nD = self.survey.nD
-        nC = m.shape[0]
-
-        # print('DASK: Chunking using parameters')
-        nChunks_col = 1
-        nChunks_row = 1
-        rowChunk = int(np.ceil(nD/nChunks_row))
-        colChunk = int(np.ceil(nC/nChunks_col))
-        chunk_size = rowChunk*colChunk*8*1e-6  # in Mb
-
-        # Add more chunks until memory falls below target
-        while chunk_size >= self.max_chunk_size:
-
-            if rowChunk > colChunk:
-                nChunks_row += 1
-            else:
-                nChunks_col += 1
-
-            rowChunk = int(np.ceil(nD/nChunks_row))
-            colChunk = int(np.ceil(nC/nChunks_col))
-            chunk_size = rowChunk*colChunk*8*1e-6  # in Mb
-
-        count = 0
-        for source in self.survey.source_list:
-            u_source = f[source, self._solutionType].copy()
-            for rx in source.receiver_list:
-                # wrt f, need possibility wrt m
-                PTv = rx.getP(self.mesh, rx.projGLoc(f)).T
-
-                df_duTFun = getattr(f, '_{0!s}Deriv'.format(rx.projField),
-                                    None)
-                df_duT, df_dmT = df_duTFun(source, None, PTv, adjoint=True)
-
-                # Find a block of receivers
-                n_block_col = int(np.ceil(df_duT.shape[0]*df_duT.shape[1]*8*1e-9 / self.maxRAM))
-
-                n_col = int(np.ceil(df_duT.shape[1] / n_block_col))
-
-                nrows = int(self.model.size / np.ceil(self.model.size * n_col * 8 * 1e-6 / self.max_chunk_size))
-                ind = 0
-                for col in range(n_block_col):
-                    ATinvdf_duT = da.asarray(self.Ainv * np.asarray(df_duT[:, ind:ind+n_col].todense())).rechunk((nrows, n_col))
-
-                    dA_dmT = self.getADeriv(u_source, ATinvdf_duT, adjoint=True)
-
-                    dRHS_dmT = self.getRHSDeriv(source, ATinvdf_duT, adjoint=True)
-
-                    du_dmT = -dA_dmT
-
-                    if not isinstance(dRHS_dmT, Zero):
-                        du_dmT += da.from_delayed(dask.delayed(dRHS_dmT), shape=(self.model.size, n_col), dtype=float)
-
-                    if not isinstance(df_dmT, Zero):
-                        du_dmT += da.from_delayed(df_dmT, shape=(self.model.size, n_col), dtype=float)
-
-                    blockName = self.Jpath + "J" + str(count) + ".zarr"
-                    da.to_zarr(du_dmT.T, blockName)
-                    del ATinvdf_duT
-                    count += 1
-
-                    ind += n_col
-
-        dask_arrays = []
-        print('count: ', count)
-        for ii in range(count):
-            blockName = self.Jpath + "J" + str(ii) + ".zarr"
-            J = da.sum(da.from_zarr(blockName)**2.0, 0)
-            # Stack all the source blocks in one big zarr
-            dask_arrays.append(J)
-        dask_arrays = da.vstack(dask_arrays)
-        print(dask_arrays)
-        self.gtgdiag = da.sum(dask_arrays, 0).compute()
-        self.Ainv.clean()
-
-        return self.gtgdiag
 
     def Jvec(self, m, v, f=None):
         """

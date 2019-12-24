@@ -344,7 +344,7 @@ class BaseIPSimulation(BaseEMSimulation):
         :return: q (nC or nN, nSrc)
         """
 
-        Srcs = self.survey.srcList
+        Srcs = self.survey.source_list
 
         if self._formulation == 'EB':
             n = self.mesh.nN
