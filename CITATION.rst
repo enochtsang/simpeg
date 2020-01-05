@@ -1,6 +1,8 @@
 Citing SimPEG
 -------------
 
+Add hello!
+
 There is a `paper about SimPEG <http://dx.doi.org/10.1016/j.cageo.2015.09.015>`_, if you use this code, please help our scientific visibility by citing our work!
 
 
